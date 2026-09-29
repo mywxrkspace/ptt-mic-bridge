@@ -1,0 +1,128 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PTT Voice Sender</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  html,body{height:100%;margin:0;background:#0f172a;color:#e2e8f0;font:14px system-ui,sans-serif}
+  body{display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;box-sizing:border-box}
+  #status{max-width:260px;line-height:1.5}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#64748b;margin-right:6px}
+</style>
+</head>
+<body>
+  <div><span class="dot" id="dot"></span><span id="status">Loading…</span></div>
+<script>
+(function () {
+  'use strict';
+  var qs = new URLSearchParams(location.search);
+  var token = qs.get('token') || '';
+  var parentOrigin = null; // learned from the first accepted message, then pinned for every message after
+  var peer = null;
+  var localStream = null;
+  var activeCalls = [];
+
+  var statusEl = document.getElementById('status');
+  var dotEl = document.getElementById('dot');
+  function setStatus(text, color) {
+    statusEl.textContent = text;
+    dotEl.style.background = color || '#64748b';
+  }
+
+  function post(msg) {
+    if (!window.opener || !parentOrigin) return;
+    try {
+      var payload = { token: token };
+      for (var k in msg) if (Object.prototype.hasOwnProperty.call(msg, k)) payload[k] = msg[k];
+      window.opener.postMessage(payload, parentOrigin);
+    } catch (e) {}
+  }
+
+  function initPeer() {
+    if (typeof Peer === 'undefined') { post({ type: 'BRIDGE_ERROR', message: 'Voice library failed to load.' }); setStatus('Library failed to load', '#ef4444'); return; }
+    try { peer = new Peer(); } catch (e) { post({ type: 'BRIDGE_ERROR', message: 'Could not start voice engine.' }); setStatus('Voice engine error', '#ef4444'); return; }
+    peer.on('open', function () { post({ type: 'SEND_PEER_READY' }); setStatus('Ready. Waiting for PTT…', '#10b981'); });
+    peer.on('error', function (err) {
+      post({ type: 'BRIDGE_ERROR', message: (err && err.message) || 'Voice engine error.' });
+      setStatus('Voice engine error', '#ef4444');
+    });
+  }
+
+  function ensureMic() {
+    if (localStream) return Promise.resolve(localStream);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      post({ type: 'MIC_STATUS', status: 'unsupported' });
+      setStatus('Microphone API unavailable', '#ef4444');
+      return Promise.reject(new Error('unsupported'));
+    }
+    post({ type: 'MIC_STATUS', status: 'connecting' });
+    setStatus('Requesting microphone…', '#f59e0b');
+    return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      localStream = stream;
+      post({ type: 'MIC_STATUS', status: 'granted' });
+      setStatus('Microphone ready. Waiting for PTT…', '#10b981');
+      return stream;
+    }).catch(function (err) {
+      var s = (err && err.name === 'NotFoundError') ? 'nodevice' : (err && err.name === 'NotAllowedError' ? 'denied' : 'unsupported');
+      post({ type: 'MIC_STATUS', status: s });
+      setStatus('Microphone blocked', '#ef4444');
+      throw err;
+    });
+  }
+
+  function startTransmitting(targets) {
+    if (!peer || !localStream) return;
+    (targets || []).forEach(function (t) {
+      if (!t || !t.peerId) return;
+      try {
+        var call = peer.call(t.peerId, localStream, { metadata: { fromUserId: t.selfUserId } });
+        if (call) activeCalls.push(call);
+      } catch (e) { /* skip this target, keep sending to the others */ }
+    });
+    setStatus('Transmitting…', '#ef4444');
+  }
+
+  function stopTransmitting() {
+    activeCalls.forEach(function (c) { try { c.close(); } catch (e) {} });
+    activeCalls = [];
+    setStatus(peer ? 'Ready. Waiting for PTT…' : 'Idle', peer ? '#10b981' : '#64748b');
+  }
+
+  window.addEventListener('message', function (event) {
+    var d = event.data;
+    if (!d || typeof d !== 'object' || d.token !== token) return; // one-time token must match on every message
+
+    if (parentOrigin === null) {
+      var originOk = /^https:\/\/([a-z0-9-]+\.)*googleusercontent\.com$/i.test(event.origin) ||
+                      /^https:\/\/script\.google\.com$/i.test(event.origin);
+      if (!originOk) return;
+      // If window.opener is available, require the message to come from that exact window
+      // (strongest check). Some environments may sever window.opener (COOP); if so, fall
+      // back to the token + origin check above only.
+      if (window.opener && event.source !== window.opener) return;
+      parentOrigin = event.origin;
+    } else if (event.origin !== parentOrigin || (window.opener && event.source !== window.opener)) {
+      return;
+    }
+
+    if (d.type === 'INIT') {
+      post({ type: 'BRIDGE_HELLO' });
+      if (!peer) initPeer();
+    } else if (d.type === 'PTT_DOWN') {
+      ensureMic().then(function () { startTransmitting(d.peers); }).catch(function () {});
+    } else if (d.type === 'PTT_UP') {
+      stopTransmitting();
+    }
+  });
+
+  window.addEventListener('beforeunload', function () {
+    stopTransmitting();
+    if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); }
+  });
+
+  setStatus(token ? 'Waiting for the app…' : 'No session token — open this from the app.', token ? '#64748b' : '#ef4444');
+})();
+</script>
+</body>
+</html>
