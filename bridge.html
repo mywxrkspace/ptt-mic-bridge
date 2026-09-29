@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>PTT Voice Sender</title>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" crossorigin="anonymous"></script>
 <style>
   html,body{height:100%;margin:0;background:#0f172a;color:#e2e8f0;font:14px system-ui,sans-serif}
   body{display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;box-sizing:border-box}
@@ -18,7 +18,7 @@
   'use strict';
   var qs = new URLSearchParams(location.search);
   var token = qs.get('token') || '';
-  var parentOrigin = null; // learned from the first accepted message, then pinned for every message after
+  var parentOrigin = null;
   var peer = null;
   var localStream = null;
   var activeCalls = [];
@@ -78,7 +78,7 @@
       try {
         var call = peer.call(t.peerId, localStream, { metadata: { fromUserId: t.selfUserId } });
         if (call) activeCalls.push(call);
-      } catch (e) { /* skip this target, keep sending to the others */ }
+      } catch (e) {}
     });
     setStatus('Transmitting…', '#ef4444');
   }
@@ -91,15 +91,12 @@
 
   window.addEventListener('message', function (event) {
     var d = event.data;
-    if (!d || typeof d !== 'object' || d.token !== token) return; // one-time token must match on every message
+    if (!d || typeof d !== 'object' || d.token !== token) return;
 
     if (parentOrigin === null) {
       var originOk = /^https:\/\/([a-z0-9-]+\.)*googleusercontent\.com$/i.test(event.origin) ||
                       /^https:\/\/script\.google\.com$/i.test(event.origin);
       if (!originOk) return;
-      // If window.opener is available, require the message to come from that exact window
-      // (strongest check). Some environments may sever window.opener (COOP); if so, fall
-      // back to the token + origin check above only.
       if (window.opener && event.source !== window.opener) return;
       parentOrigin = event.origin;
     } else if (event.origin !== parentOrigin || (window.opener && event.source !== window.opener)) {
